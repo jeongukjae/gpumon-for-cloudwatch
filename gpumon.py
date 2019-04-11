@@ -64,6 +64,11 @@ def _format_metric(name, value, resolution, dimension, unit='None'):
     }
 
 
+def _put_log(string, file_path):
+    with open(file_path, 'a+') as f:
+        f.write(string)
+
+
 def _get_meta_data(meta_type):
     return requests.get(BASE_URL + meta_type).text
 
@@ -92,14 +97,13 @@ def get_gpu_utilization(handle):
 def put_metrics_to_log_file(gpu_num, power, temp, utilization, log_path):
     """put metric line into log file
     """
-
-    with open(log_path, 'a+') as gpu_log_file:
-        try:
-            gpu_log_file.write(
-                "gpu %d, gpu util: %s, mem util: %s, power usage: %s, temp: %s\n"
-                % (gpu_num, utilization.gpu, utilization.memory, power, temp))
-        except Exception as e:
-            print("Cannot print to %s, %s" % (log_path, e))
+    try:
+        _put_log(
+            "gpu %d, gpu util: %s, mem util: %s, power usage: %s, temp: %s\n" %
+            (gpu_num, utilization.gpu, utilization.memory, power, temp),
+            log_path)
+    except Exception as e:
+        print("Cannot print to %s, %s" % (log_path, e))
 
 
 def put_metrics_to_cloudwatch(gpu_num, power, temp, utilization, resolution,
@@ -142,22 +146,28 @@ def main():
     try:
         while True:
             for gpu_num in num_device:
+                put_metric = True
                 handle = nvmlDeviceGetHandleByIndex(gpu_num)
 
-                power = get_gpu_power(handle)
-                temp = get_gpu_temperature(handle)
-                utilization = get_gpu_utilization(handle)
+                try:
+                    power = get_gpu_power(handle)
+                    temp = get_gpu_temperature(handle)
+                    utilization = get_gpu_utilization(handle)
+                except NVMLError as error:
+                    _put_log("cannot collect metrics", log_path)
+                    put_metric = False
 
-                put_metrics_to_log_file(gpu_num, power, temp, utilization,
-                                        log_path)
-                put_metrics_to_cloudwatch(gpu_num=gpu_num,
-                                          power=power,
-                                          temp=temp,
-                                          utilization=utilization,
-                                          resolution=args.resolution,
-                                          cloudwatch=cloudwatch,
-                                          namespace=args.namespace,
-                                          instance_meta=instance_meta)
+                if put_metric:
+                    put_metrics_to_log_file(gpu_num, power, temp, utilization,
+                                            log_path)
+                    put_metrics_to_cloudwatch(gpu_num=gpu_num,
+                                              power=power,
+                                              temp=temp,
+                                              utilization=utilization,
+                                              resolution=args.resolution,
+                                              cloudwatch=cloudwatch,
+                                              namespace=args.namespace,
+                                              instance_meta=instance_meta)
 
             sleep(args.interval)
     finally:
