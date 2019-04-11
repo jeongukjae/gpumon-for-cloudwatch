@@ -1,167 +1,168 @@
-# Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-# You may not use this file except in compliance with the License.
-# A copy of the License is located at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#  
-#  or in the "license" file accompanying this file. This file is distributed 
-#  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either 
-#  express or implied. See the License for the specific language governing 
-#  permissions and limitations under the License.
-
-
-import urllib2
+import requests
 import boto3
-from pynvml import *
+import argparse
+
+from pynvml import (nvmlInit, nvmlDeviceGetCount, nvmlShutdown,
+                    nvmlDeviceGetHandleByIndex, nvmlDeviceGetPowerUsage,
+                    nvmlDeviceGetTemperature, NVML_TEMPERATURE_GPU,
+                    nvmlDeviceGetUtilizationRates, NVMLError)
 from datetime import datetime
 from time import sleep
 
-### CHOOSE REGION ####
-EC2_REGION = 'us-east-1'
-
-###CHOOSE NAMESPACE PARMETERS HERE###
-my_NameSpace = 'DeepLearningTrain' 
-
-### CHOOSE PUSH INTERVAL ####
-sleep_interval = 10
-
-### CHOOSE STORAGE RESOLUTION (BETWEEN 1-60) ####
-store_reso = 60
-
-#Instance information
 BASE_URL = 'http://169.254.169.254/latest/meta-data/'
-INSTANCE_ID = urllib2.urlopen(BASE_URL + 'instance-id').read()
-IMAGE_ID = urllib2.urlopen(BASE_URL + 'ami-id').read()
-INSTANCE_TYPE = urllib2.urlopen(BASE_URL + 'instance-type').read()
-INSTANCE_AZ = urllib2.urlopen(BASE_URL + 'placement/availability-zone').read()
-EC2_REGION = INSTANCE_AZ[:-1]
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    '-i',
+    '--interval',
+    dest='interval',
+    default=10,
+    type=int,
+    help='sleep interval (times between collecting each metrics)')
+parser.add_argument(
+    '-l',
+    '--log-path',
+    dest='log_path',
+    default='/tmp/gpumon_stats',
+    type=str,
+    help='path of gpumon logs (/tmp/stat will be /tmp/stats-2019-01-01T20)')
+parser.add_argument('-r',
+                    '--resolution',
+                    dest='resolution',
+                    default=60,
+                    type=int,
+                    help='resolution of storage in cloudwatch')
+parser.add_argument('--namespace',
+                    dest='namespace',
+                    default='DeepLearning',
+                    type=str,
+                    help='namespace of cloudwatch (default: DeepLearning)')
 
-TIMESTAMP = datetime.now().strftime('%Y-%m-%dT%H')
-TMP_FILE = '/tmp/GPU_TEMP'
-TMP_FILE_SAVED = TMP_FILE + TIMESTAMP
 
-# Create CloudWatch client
-cloudwatch = boto3.client('cloudwatch', region_name=EC2_REGION)
+def _get_cloudwatch_meta(instance_id, image_id, instance_type, gpu_number):
+    return [{
+        'Name': 'InstanceId',
+        'Value': instance_id
+    }, {
+        'Name': 'ImageId',
+        'Value': image_id
+    }, {
+        'Name': 'InstanceType',
+        'Value': instance_type
+    }, {
+        'Name': 'GPUNumber',
+        'Value': gpu_number
+    }]
 
 
-# Flag to push to CloudWatch
-PUSH_TO_CW = True
+def _format_metric(name, value, resolution, dimension, unit='None'):
+    return {
+        'MetricName': name,
+        'Dimensions': dimension,
+        'Unit': unit,
+        'StorageResolution': resolution,
+        'Value': value
+    }
 
-def getPowerDraw(handle):
-    try:
-        powDraw = nvmlDeviceGetPowerUsage(handle) / 1000.0
-        powDrawStr = '%.2f' % powDraw
-    except NVMLError as err:
-        powDrawStr = handleError(err)
-        PUSH_TO_CW = False
-    return powDrawStr
 
-def getTemp(handle):
-    try:
-        temp = str(nvmlDeviceGetTemperature(handle, NVML_TEMPERATURE_GPU))
-    except NVMLError as err:
-        temp = handleError(err) 
-        PUSH_TO_CW = False
-    return temp
+def _get_meta_data(meta_type):
+    return requests.get(BASE_URL + meta_type).text
 
-def getUtilization(handle):
-    try:
-        util = nvmlDeviceGetUtilizationRates(handle)
-        gpu_util = str(util.gpu)
-        mem_util = str(util.memory)
-    except NVMLError as err:
-        error = handleError(err)
-        gpu_util = error
-        mem_util = error
-        PUSH_TO_CW = False
-    return util, gpu_util, mem_util
 
-def logResults(i, util, gpu_util, mem_util, powDrawStr, temp):
-    try:
-        gpu_logs = open(TMP_FILE_SAVED, 'a+')
-        writeString = str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
-        gpu_logs.write(writeString)
-    except:
-        print("Error writing to file ", gpu_logs)
-    finally:
-        gpu_logs.close()
-    if (PUSH_TO_CW):
-        MY_DIMENSIONS=[
-                    {
-                        'Name': 'InstanceId',
-                        'Value': INSTANCE_ID
-                    },
-                    {
-                        'Name': 'ImageId',
-                        'Value': IMAGE_ID
-                    },
-                    {
-                        'Name': 'InstanceType',
-                        'Value': INSTANCE_TYPE
-                    },
-                    {
-                        'Name': 'GPUNumber',
-                        'Value': str(i)
-                    }
-                ]
-        cloudwatch.put_metric_data(
-            MetricData=[
-                {
-                    'MetricName': 'GPU Usage',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'Percent',
-                    'StorageResolution': store_reso,
-                    'Value': util.gpu
-                },
-                {
-                    'MetricName': 'Memory Usage',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'Percent',
-                    'StorageResolution': store_reso,
-                    'Value': util.memory
-                },
-                {
-                    'MetricName': 'Power Usage (Watts)',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': float(powDrawStr)
-                },
-                {
-                    'MetricName': 'Temperature (C)',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': int(temp)
-                },            
-        ],
-            Namespace=my_NameSpace
-        )
-    
+def get_gpu_power(handle):
+    """get device power usage
+    """
 
-nvmlInit()
-deviceCount = nvmlDeviceGetCount()
+    return nvmlDeviceGetPowerUsage(handle) / 1000.0
+
+
+def get_gpu_temperature(handle):
+    """get current temperature of gpu
+    """
+
+    return nvmlDeviceGetTemperature(handle, NVML_TEMPERATURE_GPU)
+
+
+def get_gpu_utilization(handle):
+    """return utilization of gpu (including memory utilization)
+    """
+
+    return nvmlDeviceGetUtilizationRates(handle)
+
+
+def put_metrics_to_log_file(gpu_num, power, temp, utilization, log_path):
+    """put metric line into log file
+    """
+
+    with open(log_path, 'a+') as gpu_log_file:
+        try:
+            gpu_log_file.write(
+                "gpu %d, gpu util: %s, mem util: %s, power usage: %s, temp: %s\n"
+                % (gpu_num, utilization.gpu, utilization.memory, power, temp))
+        except Exception as e:
+            print("Cannot print to %s, %s" % (log_path, e))
+
+
+def put_metrics_to_cloudwatch(gpu_num, power, temp, utilization, resolution,
+                              cloudwatch, namespace, instance_meta):
+    dimension = _get_cloudwatch_meta(
+        instance_id=instance_meta['instance_id'],
+        image_id=instance_meta['image_id'],
+        instance_type=instance_meta['instance_type'],
+        gpu_number=gpu_num)
+
+    cloudwatch.put_metric_data(MetricData=[
+        _format_metric('GPU Usage', utilization.gpu, resolution, dimension,
+                       'Percent'),
+        _format_metric('Memory Usage', utilization.memory, resolution,
+                       dimension, 'Percent'),
+        _format_metric('Power Usage (Watts)', power, resolution, dimension),
+        _format_metric('Temperature (C)', temp, resolution, dimension,
+                       'Percent'),
+    ],
+                               Namespace=namespace)
+
 
 def main():
+    args = parser.parse_args()
+
+    nvmlInit()
+
+    num_device = list(range(nvmlDeviceGetCount()))
+    log_path = args.log_path + datetime.now().strftime('%Y-%m-%dT%H')
+
+    instance_meta = {
+        'instance_id': _get_meta_data('instance-id'),
+        'image_id': _get_meta_data('ami-id'),
+        'instance_type': _get_meta_data('instance-type'),
+        'region': _get_meta_data('placement/availability-zone')[:-1]
+    }
+
+    cloudwatch = boto3.client('cloudwatch',
+                              region_name=instance_meta['region'])
     try:
         while True:
-            PUSH_TO_CW = True
-            # Find the metrics for each GPU on instance
-            for i in range(deviceCount):
-                handle = nvmlDeviceGetHandleByIndex(i)
+            for gpu_num in num_device:
+                handle = nvmlDeviceGetHandleByIndex(gpu_num)
 
-                powDrawStr = getPowerDraw(handle)
-                temp = getTemp(handle)
-                util, gpu_util, mem_util = getUtilization(handle)
-                logResults(i, util, gpu_util, mem_util, powDrawStr, temp)
+                power = get_gpu_power(handle)
+                temp = get_gpu_temperature(handle)
+                utilization = get_gpu_utilization(handle)
 
-            sleep(sleep_interval)
+                put_metrics_to_log_file(gpu_num, power, temp, utilization,
+                                        log_path)
+                put_metrics_to_cloudwatch(gpu_num=gpu_num,
+                                          power=power,
+                                          temp=temp,
+                                          utilization=utilization,
+                                          resolution=args.resolution,
+                                          cloudwatch=cloudwatch,
+                                          namespace=args.namespace,
+                                          instance_meta=instance_meta)
 
+            sleep(args.interval)
     finally:
         nvmlShutdown()
 
-if __name__=='__main__':
-    main()
 
+if __name__ == "__main__":
+    main()
