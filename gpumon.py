@@ -154,7 +154,7 @@ def main():
                     temp = get_gpu_temperature(handle)
                     utilization = get_gpu_utilization(handle)
                 except NVMLError as error:
-                    _put_log("cannot collect metrics", log_path)
+                    _put_log("cannot collect metrics %s" % error, log_path)
                     put_metric = False
 
                 if put_metric:
