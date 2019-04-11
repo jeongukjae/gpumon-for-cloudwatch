@@ -1,3 +1,11 @@
+"""collect gpu metrics and put those metrics into log file and cloudwatch
+
+usage:
+
+python gpumon.py -i {time interval sec} -l {path to log} -r {resolution} --n {namespace}
+
+"""
+
 import requests
 import boto3
 import argparse
@@ -31,7 +39,8 @@ parser.add_argument('-r',
                     default=60,
                     type=int,
                     help='resolution of storage in cloudwatch')
-parser.add_argument('--namespace',
+parser.add_argument('-n',
+                    '--namespace',
                     dest='namespace',
                     default='DeepLearning',
                     type=str,
@@ -50,7 +59,7 @@ def _get_cloudwatch_meta(instance_id, image_id, instance_type, gpu_number):
         'Value': instance_type
     }, {
         'Name': 'GPUNumber',
-        'Value': gpu_number
+        'Value': str(gpu_number)
     }]
 
 
